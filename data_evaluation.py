@@ -5,6 +5,7 @@ import json
 from astropy.coordinates import EarthLocation, SkyCoord
 import os
 
+"""
 # Načítanie dát zo súboru
 def load_data(file_path):
     data = np.loadtxt(file_path, skiprows=1)  # Preskočí hlavičku
@@ -17,25 +18,63 @@ file_path = "data.txt"
 
 # Načítanie dát
 katalog, pozorovane = load_data(file_path)
+"""
 
+true_params = [0.3, -0.2, 0.15, 0.1, 0.05, -0.05, 0.02, -0.01, 0.03]  # Skutočné chyby montáže
 
+def simulate_observation(n_stars):
+    np.random.seed(42)
+    HA_kat = np.random.uniform(0, 360, n_stars)          # Hodinový uhol
+    DEC_kat = np.random.uniform(-90, 90, n_stars)        # Deklinácia
+    katalog = np.column_stack((HA_kat, DEC_kat))
+
+    pozorovane = apply_errors(true_params, katalog, n_stars, noise_scale=0.1)
+
+    return katalog, pozorovane
+
+def apply_errors(params, katalog, n_stars, phi=48, noise_scale=0.1):
+    ZH, ZD, CO, NP, MA, ME, TF, DF, FO = params
+    HA_kat, DEC_kat = katalog[:, 0], katalog[:, 1]
+    
+    # Aplikácia systémových chýb
+    HA_poz = (
+        HA_kat 
+        + ZH 
+        + CO / np.cos(np.radians(DEC_kat)) 
+        + NP * np.tan(np.radians(DEC_kat))
+        - MA * np.cos(np.radians(HA_kat)) * np.tan(np.radians(DEC_kat))
+        + ME * np.sin(np.radians(HA_kat)) * np.tan(np.radians(DEC_kat))
+        + TF * np.cos(np.radians(phi)) * np.sin(np.radians(HA_kat)) / np.cos(np.radians(DEC_kat))
+        - DF * (np.cos(np.radians(phi)) * np.cos(np.radians(HA_kat)) + np.sin(np.radians(phi)) * np.tan(np.radians(DEC_kat)))
+    )
+    
+    DEC_poz = (
+        DEC_kat 
+        + ZD 
+        + MA * np.sin(np.radians(HA_kat)) 
+        + ME * np.cos(np.radians(HA_kat))
+        + TF * (np.cos(np.radians(phi)) * np.cos(np.radians(HA_kat)) * np.sin(np.radians(DEC_kat)) 
+        - np.sin(np.radians(phi)) * np.cos(np.radians(DEC_kat)))
+        + FO * np.cos(np.radians(HA_kat))
+    )
+    
+    # Pridajte náhodný šum (napr. Gaussovský s σ=0.1°)
+    HA_poz += np.random.normal(0, noise_scale, n_stars)
+    DEC_poz += np.random.normal(0, noise_scale, n_stars)
+    
+    return np.column_stack((HA_poz, DEC_poz))
 
 # Výpočet rezíduí pred a po korekcii
 def compute_residuals(katalog, pozorovane, ha_corrected, dec_corrected):
     # Rezíduá pred korekciou
-    res_ha_before = pozorovane[:, 0] - katalog[:, 0]
-    res_dec_before = pozorovane[:, 1] - katalog[:, 1]
+    res_ha_before = np.abs(pozorovane[:, 0] - katalog[:, 0])
+    res_dec_before = np.abs(pozorovane[:, 1] - katalog[:, 1])
     
     # Rezíduá po korekcii
-    res_ha_after = ha_corrected - katalog[:, 0]
-    res_dec_after = dec_corrected - katalog[:, 1]
+    res_ha_after = np.abs(ha_corrected - katalog[:, 0])
+    res_dec_after = np.abs(dec_corrected - katalog[:, 1])
     
     return (res_ha_before, res_dec_before), (res_ha_after, res_dec_after)
-
-
-
-
-
 
 # Modelová funkcia pre chyby montáže
 def error_function(params, katalog, pozorovane):
@@ -56,7 +95,6 @@ def error_function(params, katalog, pozorovane):
     
     return np.concatenate((t_corr, d_corr))
 
-
 def calculate_corrected_coords(params, pozorovane, phi):
     ZH, ZD, CO, NP, MA, ME, TF, DF, FO = params
     t_poz, d_poz = pozorovane[:, 0], pozorovane[:, 1]
@@ -75,27 +113,6 @@ def calculate_corrected_coords(params, pozorovane, phi):
                      + FO * np.cos(np.radians(t_poz)))
     
     return t_corr, d_corr
-
-
-def error_function_lm(params, katalog, pozorovane):
-    ZH, ZD, CO, NP, MA, ME, TF, DF, FO = params
-    t_kat, d_kat = katalog[:, 0], katalog[:, 1]
-    t_poz, d_poz = pozorovane[:, 0], pozorovane[:, 1]
-    
-    # Korekcia pre hodinový uhol t a deklináciu δ
-    t_corr = t_poz - (t_kat + ZH + CO / np.cos(np.radians(d_kat)) + NP * np.tan(np.radians(d_kat))
-                     - MA * np.cos(np.radians(t_kat)) * np.tan(np.radians(d_kat))
-                     + ME * np.sin(np.radians(t_kat)) * np.tan(np.radians(d_kat))
-                     + TF * np.cos(np.radians(48)) * np.sin(np.radians(t_kat)) / np.cos(np.radians(d_kat))
-                     - DF * (np.cos(np.radians(48)) * np.cos(np.radians(t_kat)) + np.sin(np.radians(48)) * np.tan(np.radians(d_kat)) ))
-    
-    d_corr = d_poz - (d_kat + ZD + MA * np.sin(np.radians(t_kat)) + ME * np.cos(np.radians(t_kat))
-                     + TF * (np.cos(np.radians(48)) * np.cos(np.radians(t_kat)) * np.sin(np.radians(d_kat)) 
-                     - np.sin(np.radians(48)) * np.cos(np.radians(d_kat)))
-                     + FO * np.cos(np.radians(t_kat)))
-    
-    return np.concatenate((t_corr, d_corr))
-
 
 def plot_residuals(res_before, res_after):
     fig, ax = plt.subplots(2, 1, figsize=(10, 8))
@@ -123,61 +140,95 @@ def plot_residuals(res_before, res_after):
 # Počiatočné odhady korekčných faktorov (9 neznámych parametrov)
 initial_params = np.zeros(9)
 
+iterations = [50, 100, 200, 400, 800, 1600, 3200]
 
-def objective(params, katalog, pozorovane):
-    # error_function_lm vráti pole rezíduí (pre HA aj DEC)
-    residuals = error_function_lm(params, katalog, pozorovane)
-    # Súčet štvorcov rezíduí (vlastne, chi-kvadrát)
-    return np.sum(residuals**2)
+n_stars = 1600
 
-# Nájdeme optimálne korekčné faktory
-#result  = minimize(objective, initial_params, args=(katalog, pozorovane), method='L-BFGS-B')
-#optimal_params = result.x
+katalog, pozorovane = simulate_observation(n_stars)
+
+print(f"{'HA':>10}\t\t{'DEC':>10}\t\t\t{'HA_o':>10}\t\t\t{'DEC_o':>10}")
+for (ha, dec), (ha_o, dec_o) in zip(katalog, pozorovane):
+    print(f"{ha:10.4f}\t\t{dec:10.4f}\t\t\t{ha_o:10.4f}\t\t\t{dec_o:10.4f}")
+
+print("\n")
+
 optimal_params, _ = leastsq(error_function, initial_params, args=(katalog, pozorovane))
-#optimal_params, _ = curve_fit(lambda x, *params: error_function_lm(params, x[0], x[1]), (katalog, pozorovane), np.zeros(len(katalog)*2), p0=initial_params)
+ha_c, dec_c = calculate_corrected_coords(optimal_params, pozorovane, 48)
 
-# Výpis výsledkov
-ZH, ZD, CO, NP, MA, ME, TF, DF, FO = optimal_params
-print("Optimalizované korekčné faktory montáže:")
-print(f"ZH (nulový bod hodinového uhla): {ZH:.4f}")
-print(f"ZD (nulový bod deklinácie): {ZD:.4f}")
-print(f"CO (kolimácia): {CO:.4f}")
-print(f"NP (nekolmosť osí): {NP:.4f}")
-print(f"MA (chyba vyrovnania E-W): {MA:.4f}")
-print(f"ME (chyba vyrovnania N-S): {ME:.4f}")
-print(f"TF (priehyb tubusu): {TF:.4f}")
-print(f"DF (chyba deklinácie): {DF:.4f}")
-print(f"FO (chyba vidlice): {FO:.4f}")
+# Vypočítajte reziduá
+res_before, res_after = compute_residuals(katalog, pozorovane, ha_c, dec_c)
 
-# Výpočet opravených hodnôt HA a DEC
-ha_corrected, dec_corrected = calculate_corrected_coords(optimal_params, pozorovane, 48)
+# Rozbaľte reziduá
+res_ha_before, res_dec_before = res_before
+res_ha_after, res_dec_after = res_after
 
-# Výpis porovnania údajov
-print("katalog HA DEC, HA_namerane DEC_namerane, HA_opravene DEC_opravene")
-for i in range(len(katalog)):
-    print(f"{katalog[i][0]:.6f} {katalog[i][1]:.6f}, {pozorovane[i][0]:.6f} {pozorovane[i][1]:.6f}, {ha_corrected[i]:.6f} {dec_corrected[i]:.6f}")
+# Vypíšte hlavičku tabuľky
+print(f"{'RES_HA':>10}\t\t{'RES_DEC':>10}\t\t\t{'RES_HA_c':>10}\t\t\t{'RES_DEC_c':>10}")
 
-res_before, res_after = compute_residuals(katalog, pozorovane, ha_corrected, dec_corrected)
+# Vypíšte hodnoty
+for ha, dec, ha_c, dec_c in zip(res_ha_before, res_ha_after, res_ha_after, res_dec_after):
+    print(f"{ha:10.4f}\t\t{dec:10.4f}\t\t\t{ha_c:10.4f}\t\t\t{dec_c:10.4f}")
+
+ha_c, dec_c = calculate_corrected_coords(optimal_params, pozorovane, 48)
+res_before, res_after = compute_residuals(katalog, pozorovane, ha_c, dec_c)
+
 plot_residuals(res_before, res_after)
 
 
-def sum_squared_error(params, katalog, pozorovane):
-    residuals = error_function_lm(params, katalog, pozorovane)
-    return np.sum(residuals**2)
-ZH_opt = optimal_params[0]
-ZH_vals = np.linspace(ZH_opt - 0.1, ZH_opt + 0.1, 100)  # upravte interval podľa potreby
 
-errors = []
-for z in ZH_vals:
-    params = optimal_params.copy()
-    params[0] = z  # variujeme len ZH
-    errors.append(sum_squared_error(params, katalog, pozorovane))
 
-plt.figure(figsize=(8, 5))
-plt.plot(ZH_vals, errors, 'b-', label='Suma štvorcov rezíduí')
-plt.xlabel("ZH (nulový bod hodinového uhla)")
-plt.ylabel("Suma štvorcov rezíduí")
-plt.title("Závislosť error funkcie na ZH")
-plt.legend()
-plt.grid(True)
-plt.show()
+# Výpis výsledkov
+ZH_c, ZD_c, CO_c, NP_c, MA_c, ME_c, TF_c, DF_c, FO_c = optimal_params
+ZH_t, ZD_t, CO_t, NP_t, MA_t, ME_t, TF_t, DF_t, FO_t = true_params
+
+print(f"Optimalizované korekčné faktory montáže pri {n_stars} pozorovaniach:")
+print(f"ZH (nulový bod hodinového uhla): δ_ZH={abs(ZH_c - ZH_t):.4f}")
+print(f"ZD (nulový bod deklinácie): δ_ZD={abs(ZD_c - ZD_t):.4f}")
+print(f"CO (kolimácia): δ_CO={abs(CO_c - CO_t):.4f}")
+print(f"NP (nekolmosť osí): δ_NP={abs(NP_c - NP_c):.4f}")
+print(f"MA (chyba vyrovnania E-W): δ_MA={abs(MA_c - MA_t):.4f}")
+print(f"ME (chyba vyrovnania N-S): δ_ME={abs(ME_c - ME_t):.4f}")
+print(f"TF (priehyb tubusu): δ_TF={abs(TF_c - TF_t):.4f}")
+print(f"DF (chyba deklinácie): δ_DF={abs(DF_c - DF_t):.4f}")
+print(f"FO (chyba vidlice): δ_FO={abs(FO_c - FO_t):.4f}")
+print("\n")
+
+
+
+
+
+
+
+"""
+for i in iterations:
+    katalog, pozorovane = simulate_observation(i)
+    # Nájdeme optimálne korekčné faktory
+    optimal_params, _ = leastsq(error_function, initial_params, args=(katalog, pozorovane))
+
+    # Výpis výsledkov
+    ZH_c, ZD_c, CO_c, NP_c, MA_c, ME_c, TF_c, DF_c, FO_c = optimal_params
+    ZH_t, ZD_t, CO_t, NP_t, MA_t, ME_t, TF_t, DF_t, FO_t = true_params
+
+    print(f"Optimalizované korekčné faktory montáže pri {i} pozorovaniach:")
+    print(f"ZH (nulový bod hodinového uhla): δ_ZH={abs(ZH_c - ZH_t):.4f}")
+    print(f"ZD (nulový bod deklinácie): δ_ZD={abs(ZD_c - ZD_t):.4f}")
+    print(f"CO (kolimácia): δ_CO={abs(CO_c - CO_t):.4f}")
+    print(f"NP (nekolmosť osí): δ_NP={abs(NP_c - NP_c):.4f}")
+    print(f"MA (chyba vyrovnania E-W): δ_MA={abs(MA_c - MA_t):.4f}")
+    print(f"ME (chyba vyrovnania N-S): δ_ME={abs(ME_c - ME_t):.4f}")
+    print(f"TF (priehyb tubusu): δ_TF={abs(TF_c - TF_t):.4f}")
+    print(f"DF (chyba deklinácie): δ_DF={abs(DF_c - DF_t):.4f}")
+    print(f"FO (chyba vidlice): δ_FO={abs(FO_c - FO_t):.4f}")
+    print("\n")
+
+    ha_c, dec_c = calculate_corrected_coords(optimal_params, pozorovane, 48)
+    res_before, res_after = compute_residuals(katalog, pozorovane, ha_c, dec_c)
+
+    plot_residuals(res_before, res_after)
+"""
+
+
+
+
+
+
