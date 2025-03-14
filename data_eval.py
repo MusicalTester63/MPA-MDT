@@ -44,7 +44,7 @@ def rmsus(meas_pos, pos_ast):
     return np.sqrt(np.mean((meas_pos - pos_ast) ** 2))
     
 def get_model_data(mode):
-    with open('data.txt','r') as f:
+    with open('./data/data.txt','r') as f:
         text=f.readlines()[1:]
         n=0
         if mode == '1':
