@@ -41,11 +41,16 @@ def load_data(mode, n_stars):
 
 
 def simulate_observation(n_stars):
-    
-    HA_kat = np.random.uniform(0, 360, n_stars)          # Hodinový uhol
-    DEC_kat = np.random.uniform(-90, 90, n_stars)        # Deklinácia
+    # Hodinový uhol (preferovane okolo ± 4 hodín, teda ~±60°)
+    HA_kat = np.random.normal(loc=0, scale=60, size=n_stars)
+    HA_kat = np.clip(HA_kat, -180, 180)  # Orezanie na platný rozsah
+
+    # Deklinácia (sinusové rozdelenie)
+    DEC_kat = np.arcsin(np.random.uniform(-1, 1, n_stars)) * (180 / np.pi)
+
     katalog = np.column_stack((HA_kat, DEC_kat))
 
+    # Aplikovanie chýb na simulované dáta
     pozorovane = apply_errors(true_params, katalog, n_stars, noise_scale=0.1)
 
     return katalog, pozorovane
@@ -95,21 +100,16 @@ def plot_polar_comparison(katalog, pozorovane, pozorovane_corrected):
     pozorovane_corrected : numpy.ndarray
         Pole tvaru (n, 2) obsahujúce HA a DEC hodnoty pozorovaní po korekcii.
     """
-    # Rozbaľte dáta
     ha_katalog, dec_katalog = katalog[:, 0], katalog[:, 1]
     ha_pozorovane, dec_pozorovane = pozorovane[:, 0], pozorovane[:, 1]
     ha_corrected, dec_corrected = pozorovane_corrected[:, 0], pozorovane_corrected[:, 1]
 
-    # Vytvorte polárny graf
     fig, ax = plt.subplots(subplot_kw={'projection': 'polar'}, figsize=(8, 8))
 
-    # Vykreslite katalógové hodnoty (referenčné)
     ax.scatter(np.radians(ha_katalog), dec_katalog, color='blue', label='Katalóg', alpha=0.6)
 
-    # Vykreslite pozorované hodnoty pred korekciou
     ax.scatter(np.radians(ha_pozorovane), dec_pozorovane, color='red', label='Pozorované (pred korekciou)', alpha=0.6)
 
-    # Vykreslite pozorované hodnoty po korekcii
     ax.scatter(np.radians(ha_corrected), dec_corrected, color='green', label='Pozorované (po korekcii)', alpha=0.6)
 
     # Nastavenie grafu
@@ -227,47 +227,40 @@ def plot_cartesian_comparison_with_error_components(katalog, pozorovane, pozorov
     pozorovane_corrected : numpy.ndarray
         Pole tvaru (n, 2) obsahujúce HA a DEC hodnoty pozorovaní po korekcii.
     """
-    # Rozbaľte dáta
     ha_katalog, dec_katalog = katalog[:, 0], katalog[:, 1]
     ha_pozorovane, dec_pozorovane = pozorovane[:, 0], pozorovane[:, 1]
     ha_corrected, dec_corrected = pozorovane_corrected[:, 0], pozorovane_corrected[:, 1]
 
-    # Vytvorte graf
     plt.figure(figsize=(12, 8))
 
-    # Vykreslite katalógové hodnoty (referenčné)
     plt.scatter(ha_katalog, dec_katalog, color='blue', label='Katalóg', alpha=0.6)
 
-    # Vykreslite pozorované hodnoty pred korekciou a čiary pre chyby v HA a DEC
     plt.scatter(ha_pozorovane, dec_pozorovane, color='red', label='Pozorované (pred korekciou)', alpha=0.6)
     for ha_k, dec_k, ha_p, dec_p in zip(ha_katalog, dec_katalog, ha_pozorovane, dec_pozorovane):
-        # Čiara pre chybu v HA (horizontálny smer)
+        
         plt.plot([ha_k, ha_p], [dec_k, dec_k], color='orange', linestyle='--', linewidth=1, alpha=0.6, label='Chyba HA' if ha_k == ha_katalog[0] else "")
-        # Čiara pre chybu v DEC (vertikálny smer)
+        
         plt.plot([ha_p, ha_p], [dec_k, dec_p], color='purple', linestyle='--', linewidth=1, alpha=0.6, label='Chyba DEC' if ha_k == ha_katalog[0] else "")
-        # Zobrazte veľkosť chýb ako text
+        
         plt.text(ha_p, dec_k, f"HA: {ha_p - ha_k:.2f}", color='orange', fontsize=8, ha='left', va='bottom')
         plt.text(ha_p, dec_p, f"DEC: {dec_p - dec_k:.2f}", color='purple', fontsize=8, ha='left', va='bottom')
 
-    # Vykreslite pozorované hodnoty po korekcii a čiary pre chyby v HA a DEC
     plt.scatter(ha_corrected, dec_corrected, color='green', label='Pozorované (po korekcii)', alpha=0.6)
     for ha_k, dec_k, ha_c, dec_c in zip(ha_katalog, dec_katalog, ha_corrected, dec_corrected):
-        # Čiara pre chybu v HA (horizontálny smer)
+        
         plt.plot([ha_k, ha_c], [dec_k, dec_k], color='orange', linestyle='--', linewidth=1, alpha=0.6)
-        # Čiara pre chybu v DEC (vertikálny smer)
+        
         plt.plot([ha_c, ha_c], [dec_k, dec_c], color='purple', linestyle='--', linewidth=1, alpha=0.6)
-        # Zobrazte veľkosť chýb ako text
+        
         plt.text(ha_c, dec_k, f"HA: {ha_c - ha_k:.2f}", color='orange', fontsize=8, ha='left', va='bottom')
         plt.text(ha_c, dec_c, f"DEC: {dec_c - dec_k:.2f}", color='purple', fontsize=8, ha='left', va='bottom')
 
-    # Nastavenie grafu
     plt.title("Porovnanie pozorovaní pred a po korekcii s chybami v HA a DEC")
     plt.xlabel("Hodinový uhol (HA) [°]")
     plt.ylabel("Deklinácia (DEC) [°]")
     plt.legend(loc='upper right')
     plt.grid(True)
 
-    # Zobrazenie grafu
     plt.show()
 
 def compute_residuals(katalog, pozorovane, pozorovane_corrected):
