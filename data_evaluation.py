@@ -9,20 +9,18 @@ import os
 
 true_params = [0.3, -0.2, 0.15, 0.1, 0.05, -0.05, 0.02, -0.01, 0.03]  # Skutočné chyby montáže
 
-# Funkcia na získanie zemepisnej šírky z IP adresy
 def get_latitude():
     try:
         geolocator = Nominatim(user_agent="geo_locator")
-        location = geolocator.geocode("Slovakia")  # Môžeš zmeniť na konkrétne mesto
+        location = geolocator.geocode("Bratislava")
         if location:
             return location.latitude
         else:
-            return 48.0  # Default pre Slovensko, ak API zlyhá
+            return 48.0
     except Exception as e:
         print(f"Chyba pri geolokácii: {e}")
-        return 48.0  # Náhradná hodnota
+        return 48.0
 
-# Použitie latitude v error_function
 
 
 def load_data(mode, n_stars):
