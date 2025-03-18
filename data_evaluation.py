@@ -4,9 +4,26 @@ import matplotlib.pyplot as plt
 import json
 from matplotlib.lines import Line2D
 from astropy.coordinates import EarthLocation, SkyCoord
+from geopy.geocoders import Nominatim
 import os
 
 true_params = [0.3, -0.2, 0.15, 0.1, 0.05, -0.05, 0.02, -0.01, 0.03]  # Skutočné chyby montáže
+
+# Funkcia na získanie zemepisnej šírky z IP adresy
+def get_latitude():
+    try:
+        geolocator = Nominatim(user_agent="geo_locator")
+        location = geolocator.geocode("Slovakia")  # Môžeš zmeniť na konkrétne mesto
+        if location:
+            return location.latitude
+        else:
+            return 48.0  # Default pre Slovensko, ak API zlyhá
+    except Exception as e:
+        print(f"Chyba pri geolokácii: {e}")
+        return 48.0  # Náhradná hodnota
+
+# Použitie latitude v error_function
+
 
 def load_data(mode, n_stars):
     """
@@ -37,8 +54,6 @@ def load_data(mode, n_stars):
         raise ValueError('Invalid mode. Please use ".')
 
     return katalog, pozorovane
-        
-
 
 def simulate_observation(n_stars):
     # Hodinový uhol (preferovane okolo ± 4 hodín, teda ~±60°)
@@ -274,19 +289,20 @@ def compute_residuals(katalog, pozorovane, pozorovane_corrected):
     
     return (res_ha_before, res_dec_before), (res_ha_after, res_dec_after)
 
-def error_function(params, katalog, pozorovane):
+def error_function(params, katalog, pozorovane, latitude):
     ZH, ZD, CO, NP, MA, ME, TF, DF, FO = params
+
     t_kat, d_kat = katalog[:, 0], katalog[:, 1]
     t_poz, d_poz = pozorovane[:, 0], pozorovane[:, 1]
     
     t_corr = t_poz - (t_kat + ZH + CO / np.cos(np.radians(d_kat)) + NP * np.tan(np.radians(d_kat))
                      - MA * np.cos(np.radians(t_kat)) * np.tan(np.radians(d_kat))
                      + ME * np.sin(np.radians(t_kat)) * np.tan(np.radians(d_kat))
-                     + TF * np.cos(np.radians(48)) * np.sin(np.radians(t_kat)) / np.cos(np.radians(d_kat))
-                     - DF * (np.cos(np.radians(48)) * np.cos(np.radians(t_kat)) + np.sin(np.radians(48)) * np.tan(np.radians(d_kat)) ))
+                     + TF * np.cos(np.radians(latitude)) * np.sin(np.radians(t_kat)) / np.cos(np.radians(d_kat))
+                     - DF * (np.cos(np.radians(latitude)) * np.cos(np.radians(t_kat)) + np.sin(np.radians(latitude)) * np.tan(np.radians(d_kat)) ))
     
     d_corr = d_poz - (d_kat + ZD + MA * np.sin(np.radians(t_kat)) + ME * np.cos(np.radians(t_kat))
-                     + TF * (np.cos(np.radians(48)) * np.cos(np.radians(t_kat)) * np.sin(np.radians(d_kat)) - np.sin(np.radians(48)) * np.cos(np.radians(d_kat)))
+                     + TF * (np.cos(np.radians(latitude)) * np.cos(np.radians(t_kat)) * np.sin(np.radians(d_kat)) - np.sin(np.radians(48)) * np.cos(np.radians(d_kat)))
                      + FO * np.cos(np.radians(t_kat)))
     
     return np.concatenate((t_corr, d_corr))
@@ -430,7 +446,9 @@ def main():
         except Exception as e:
             print(f"Error: {e}")
 
-    optimal_params, _ = leastsq(error_function, initial_params, args=(katalog, pozorovane))
+    latitude = get_latitude()
+
+    optimal_params, _ = leastsq(error_function, initial_params, args=(katalog, pozorovane, latitude))
     pozorovane_corrected = calculate_corrected_coords(optimal_params, pozorovane, 48)
 
     #Výpis prvej tabulky súradnice
