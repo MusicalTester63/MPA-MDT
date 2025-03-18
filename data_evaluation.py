@@ -3,7 +3,6 @@ from scipy.optimize import curve_fit,minimize,leastsq
 import matplotlib.pyplot as plt
 import json
 from matplotlib.lines import Line2D
-from astropy.coordinates import EarthLocation, SkyCoord
 from geopy.geocoders import Nominatim
 import os
 
@@ -20,8 +19,6 @@ def get_latitude():
     except Exception as e:
         print(f"Chyba pri geolokácii: {e}")
         return 48.0
-
-
 
 def load_data(mode, n_stars):
     """
@@ -454,6 +451,13 @@ def main():
     for (ha, dec), (ha_o, dec_o), (ha_c, dec_c) in zip(katalog, pozorovane, pozorovane_corrected):
         print(f"{ha:10.4f}\t\t{dec:10.4f}\t\t\t{ha_o:10.4f}\t\t\t{dec_o:10.4f}\t\t\t{ha_c:10.4f}\t\t\t{dec_c:10.4f}")
     print("\n")
+
+
+    with open("data.txt", "w") as f:
+        f.write(f"{'HA':>15}\t{'DEC':>15}\t{'HA_corrected':>15}\t{'DEC_corrected':>15}\n")
+        for (ha, dec), (ha_c, dec_c) in zip(katalog, pozorovane_corrected):
+            f.write(f"{ha:15.4f}\t{dec:15.4f}\t{ha_c:15.4f}\t{dec_c:15.4f}\n")
+
 
     res_before, res_after = compute_residuals(katalog, pozorovane, pozorovane_corrected)
     res_ha_before, res_dec_before = res_before
