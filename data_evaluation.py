@@ -1,10 +1,12 @@
 import numpy as np
 from scipy.optimize import curve_fit,minimize,leastsq
 import matplotlib.pyplot as plt
-import json
 from matplotlib.lines import Line2D
 from geopy.geocoders import Nominatim
-import os
+from astroquery.gaia import Gaia
+from astropy.coordinates import SkyCoord, EarthLocation, AltAz
+from astropy.time import Time
+import astropy.units as u
 
 true_params = [0.3, -0.2, 0.15, 0.1, 0.05, -0.05, 0.02, -0.01, 0.03]  # Skutočné chyby montáže
 
@@ -35,11 +37,11 @@ def load_data(mode, n_stars):
         raise ValueError("Number of observations has to be a non zero value.")
 
     if mode == "simulate":
-        katalog, pozorovane = simulate_observation(n_stars)
+        katalog, pozorovane = simulate_observation_gaia(n_stars)
         
 
     elif mode == "file":
-        data = np.loadtxt("./data/data.txt", skiprows=1)  # Preskočí hlavičku
+        data = np.loadtxt("./data/point_data1.txt", skiprows=1)  # Preskočí hlavičku
         if len(data) < n_stars:
             raise ValueError(f"File contains only {len(data)} rows of data. You required {n_stars}.")
         katalog = data[:n_stars, :2]  # HA a DEC (katalógové súradnice)
@@ -61,7 +63,49 @@ def simulate_observation(n_stars):
     katalog = np.column_stack((HA_kat, DEC_kat))
 
     # Aplikovanie chýb na simulované dáta
-    pozorovane = apply_errors(true_params, katalog, n_stars, noise_scale=0.1)
+    pozorovane = apply_errors(true_params, katalog, n_stars, noise_scale=0.01)
+
+    return katalog, pozorovane
+
+def simulate_observation_gaia(n_stars):
+
+    # Definovanie ADQL dotazu pre náhodný výber hviezd
+    adql_query = f"""
+    SELECT TOP {n_stars} source_id, ra, dec
+    FROM gaiadr3.gaia_source
+    WHERE phot_g_mean_mag < 15
+    ORDER BY random_index
+    """
+    job = Gaia.launch_job(adql_query)
+    results = job.get_results()
+
+    # Extrakcia RA a DEC
+    ra = np.array(results['ra'])
+    dec = np.array(results['dec'])
+
+    # Vytvorenie SkyCoord objektu pre získané hviezdy
+    coords = SkyCoord(ra=ra*u.degree, dec=dec*u.degree, frame='icrs')
+
+    # Definovanie času pozorovania a miesta (napr. Greenwich)
+    observing_time = Time('2025-04-06T22:00:00')  # Prispôsobte podľa potreby
+    observing_location = EarthLocation.of_site('greenwich')  # Alebo zadajte vlastné súradnice
+
+    # Transformácia na horizontálny systém súradníc
+    altaz = AltAz(obstime=observing_time, location=observing_location)
+    altaz_coords = coords.transform_to(altaz)
+
+    # Výpočet hodinového uhla (HA)
+    lst = observing_time.sidereal_time('apparent', longitude=observing_location.lon)
+    ha = (lst - coords.ra).wrap_at(12 * u.hour)  # HA v hodinách
+
+    # Konverzia HA na stupne
+    ha_deg = ha.to(u.degree).value
+
+    # Vytvorenie katalógu s HA a DEC
+    katalog = np.column_stack((ha_deg, dec))
+
+    # Aplikovanie chýb na dáta (funkcia apply_errors a parameter true_params sú predpokladané)
+    pozorovane = apply_errors(true_params, katalog, n_stars, noise_scale=0.01)
 
     return katalog, pozorovane
 
@@ -96,132 +140,6 @@ def apply_errors(params, katalog, n_stars, phi=48, noise_scale=0.1):
     DEC_poz += np.random.normal(0, noise_scale, n_stars)
     
     return np.column_stack((HA_poz, DEC_poz))
-
-def plot_polar_comparison(katalog, pozorovane, pozorovane_corrected):
-    """
-    Vykreslí polárny graf pre katalog, pozorovane a pozorovane_corrected.
-
-    Parametre:
-    ----------
-    katalog : numpy.ndarray
-        Pole tvaru (n, 2) obsahujúce HA a DEC hodnoty z katalógu.
-    pozorovane : numpy.ndarray
-        Pole tvaru (n, 2) obsahujúce HA a DEC hodnoty pozorovaní pred korekciou.
-    pozorovane_corrected : numpy.ndarray
-        Pole tvaru (n, 2) obsahujúce HA a DEC hodnoty pozorovaní po korekcii.
-    """
-    ha_katalog, dec_katalog = katalog[:, 0], katalog[:, 1]
-    ha_pozorovane, dec_pozorovane = pozorovane[:, 0], pozorovane[:, 1]
-    ha_corrected, dec_corrected = pozorovane_corrected[:, 0], pozorovane_corrected[:, 1]
-
-    fig, ax = plt.subplots(subplot_kw={'projection': 'polar'}, figsize=(8, 8))
-
-    ax.scatter(np.radians(ha_katalog), dec_katalog, color='blue', label='Katalóg', alpha=0.6)
-
-    ax.scatter(np.radians(ha_pozorovane), dec_pozorovane, color='red', label='Pozorované (pred korekciou)', alpha=0.6)
-
-    ax.scatter(np.radians(ha_corrected), dec_corrected, color='green', label='Pozorované (po korekcii)', alpha=0.6)
-
-    # Nastavenie grafu
-    ax.set_title("Porovnanie pozorovaní pred a po korekcii", pad=20)
-    ax.set_theta_zero_location('N')  # Nastavenie severu na vrchol grafu
-    ax.set_theta_direction(-1)  # Hodinový uhol sa zväčšuje v smere hodinových ručičiek
-    ax.legend(loc='upper right', bbox_to_anchor=(1.1, 1.1))
-
-    # Zobrazenie grafu
-    plt.show()
-
-    """
-    Vykreslí karteziánsky graf pre katalog, pozorovane a pozorovane_corrected.
-
-    Parametre:
-    ----------
-    katalog : numpy.ndarray
-        Pole tvaru (n, 2) obsahujúce HA a DEC hodnoty z katalógu.
-    pozorovane : numpy.ndarray
-        Pole tvaru (n, 2) obsahujúce HA a DEC hodnoty pozorovaní pred korekciou.
-    pozorovane_corrected : numpy.ndarray
-        Pole tvaru (n, 2) obsahujúce HA a DEC hodnoty pozorovaní po korekcii.
-    """
-    # Rozbaľte dáta
-    ha_katalog, dec_katalog = katalog[:, 0], katalog[:, 1]
-    ha_pozorovane, dec_pozorovane = pozorovane[:, 0], pozorovane[:, 1]
-    ha_corrected, dec_corrected = pozorovane_corrected[:, 0], pozorovane_corrected[:, 1]
-
-    # Vytvorte graf
-    plt.figure(figsize=(10, 6))
-
-    # Vykreslite katalógové hodnoty (referenčné)
-    plt.scatter(ha_katalog, dec_katalog, color='blue', label='Katalóg', alpha=0.6)
-
-    # Vykreslite pozorované hodnoty pred korekciou
-    plt.scatter(ha_pozorovane, dec_pozorovane, color='red', label='Pozorované (pred korekciou)', alpha=0.6)
-
-    # Vykreslite pozorované hodnoty po korekcii
-    plt.scatter(ha_corrected, dec_corrected, color='green', label='Pozorované (po korekcii)', alpha=0.6)
-
-    # Nastavenie grafu
-    plt.title("Porovnanie pozorovaní pred a po korekcii")
-    plt.xlabel("Hodinový uhol (HA) [°]")
-    plt.ylabel("Deklinácia (DEC) [°]")
-    plt.legend(loc='upper right')
-    plt.grid(True)
-
-    # Zobrazenie grafu
-    plt.show()
-
-    """
-    Vykreslí karteziánsky graf pre katalog, pozorovane a pozorovane_corrected,
-    s čiarami spájajúcimi katalógové body s pozorovanými a opravenými bodmi,
-    a zobrazí dĺžky týchto úsečiek.
-
-    Parametre:
-    ----------
-    katalog : numpy.ndarray
-        Pole tvaru (n, 2) obsahujúce HA a DEC hodnoty z katalógu.
-    pozorovane : numpy.ndarray
-        Pole tvaru (n, 2) obsahujúce HA a DEC hodnoty pozorovaní pred korekciou.
-    pozorovane_corrected : numpy.ndarray
-        Pole tvaru (n, 2) obsahujúce HA a DEC hodnoty pozorovaní po korekcii.
-    """
-    # Rozbaľte dáta
-    ha_katalog, dec_katalog = katalog[:, 0], katalog[:, 1]
-    ha_pozorovane, dec_pozorovane = pozorovane[:, 0], pozorovane[:, 1]
-    ha_corrected, dec_corrected = pozorovane_corrected[:, 0], pozorovane_corrected[:, 1]
-
-    # Vytvorte graf
-    plt.figure(figsize=(10, 6))
-
-    # Vykreslite katalógové hodnoty (referenčné)
-    plt.scatter(ha_katalog, dec_katalog, color='blue', label='Katalóg', alpha=0.6)
-
-    # Vykreslite pozorované hodnoty pred korekciou a spojte ich čiarami s katalógovými bodmi
-    plt.scatter(ha_pozorovane, dec_pozorovane, color='red', label='Pozorované (pred korekciou)', alpha=0.6)
-    for ha_k, dec_k, ha_p, dec_p in zip(ha_katalog, dec_katalog, ha_pozorovane, dec_pozorovane):
-        plt.plot([ha_k, ha_p], [dec_k, dec_p], color='red', linestyle='--', linewidth=0.5, alpha=0.4)
-        # Vypočítajte vzdialenosť
-        distance = np.sqrt((ha_p - ha_k)**2 + (dec_p - dec_k)**2)
-        # Zobrazte vzdialenosť ako text v strede úsečky
-        plt.text((ha_k + ha_p) / 2, (dec_k + dec_p) / 2, f"{distance:.2f}", color='red', fontsize=8)
-
-    # Vykreslite pozorované hodnoty po korekcii a spojte ich čiarami s katalógovými bodmi
-    plt.scatter(ha_corrected, dec_corrected, color='green', label='Pozorované (po korekcii)', alpha=0.6)
-    for ha_k, dec_k, ha_c, dec_c in zip(ha_katalog, dec_katalog, ha_corrected, dec_corrected):
-        plt.plot([ha_k, ha_c], [dec_k, dec_c], color='green', linestyle='--', linewidth=0.5, alpha=0.4)
-        # Vypočítajte vzdialenosť
-        distance = np.sqrt((ha_c - ha_k)**2 + (dec_c - dec_k)**2)
-        # Zobrazte vzdialenosť ako text v strede úsečky
-        plt.text((ha_k + ha_c) / 2, (dec_k + dec_c) / 2, f"{distance:.2f}", color='green', fontsize=8)
-
-    # Nastavenie grafu
-    plt.title("Porovnanie pozorovaní pred a po korekcii s vyznačenými vzdialenosťami")
-    plt.xlabel("Hodinový uhol (HA) [°]")
-    plt.ylabel("Deklinácia (DEC) [°]")
-    plt.legend(loc='upper right')
-    plt.grid(True)
-
-    # Zobrazenie grafu
-    plt.show()
 
 def plot_cartesian_comparison_with_error_components(katalog, pozorovane, pozorovane_corrected):
     """
@@ -470,24 +388,41 @@ def main():
 
 
     plot_residuals_comparison(res_before, res_after)
-    #plot_polar_comparison(katalog, pozorovane, pozorovane_corrected)
     plot_cartesian_comparison_with_error_components(katalog, pozorovane, pozorovane_corrected)
 
     # Výpis výsledkov
+    
     ZH_c, ZD_c, CO_c, NP_c, MA_c, ME_c, TF_c, DF_c, FO_c = optimal_params
     ZH_t, ZD_t, CO_t, NP_t, MA_t, ME_t, TF_t, DF_t, FO_t = true_params
 
+
+    if mode == "simulate":
+
+        print(f"Optimalizované korekčné faktory montáže pri {n_stars} pozorovaniach:")
+
+        print(f"ZH (nulový bod hodinového uhla): δ_ZH={abs(ZH_c - ZH_t):.4f}")
+        print(f"ZD (nulový bod deklinácie): δ_ZD={abs(ZD_c - ZD_t):.4f}")
+        print(f"CO (kolimácia): δ_CO={abs(CO_c - CO_t):.4f}")
+        print(f"NP (nekolmosť osí): δ_NP={abs(NP_c - NP_t):.4f}")
+        print(f"MA (chyba vyrovnania E-W): δ_MA={abs(MA_c - MA_t):.4f}")
+        print(f"ME (chyba vyrovnania N-S): δ_ME={abs(ME_c - ME_t):.4f}")
+        print(f"TF (priehyb tubusu): δ_TF={abs(TF_c - TF_t):.4f}")
+        print(f"DF (chyba deklinácie): δ_DF={abs(DF_c - DF_t):.4f}")
+        print(f"FO (chyba vidlice): δ_FO={abs(FO_c - FO_t):.4f}")
+        print("\n")
+
+
     print(f"Optimalizované korekčné faktory montáže pri {n_stars} pozorovaniach:")
 
-    print(f"ZH (nulový bod hodinového uhla): δ_ZH={abs(ZH_c - ZH_t):.4f}")
-    print(f"ZD (nulový bod deklinácie): δ_ZD={abs(ZD_c - ZD_t):.4f}")
-    print(f"CO (kolimácia): δ_CO={abs(CO_c - CO_t):.4f}")
-    print(f"NP (nekolmosť osí): δ_NP={abs(NP_c - NP_t):.4f}")
-    print(f"MA (chyba vyrovnania E-W): δ_MA={abs(MA_c - MA_t):.4f}")
-    print(f"ME (chyba vyrovnania N-S): δ_ME={abs(ME_c - ME_t):.4f}")
-    print(f"TF (priehyb tubusu): δ_TF={abs(TF_c - TF_t):.4f}")
-    print(f"DF (chyba deklinácie): δ_DF={abs(DF_c - DF_t):.4f}")
-    print(f"FO (chyba vidlice): δ_FO={abs(FO_c - FO_t):.4f}")
+    print(f"ZH (nulový bod hodinového uhla): ZH={ZH_c:.4f}")
+    print(f"ZD (nulový bod deklinácie): ZD={ZD_c:.4f}")
+    print(f"CO (kolimácia): CO={CO_c:.4f}")
+    print(f"NP (nekolmosť osí): NP={NP_c:.4f}")
+    print(f"MA (chyba vyrovnania E-W): MA={MA_c:.4f}")
+    print(f"ME (chyba vyrovnania N-S): ME={abs(ME_c):.4f}")
+    print(f"TF (priehyb tubusu): TF={TF_c:.4f}")
+    print(f"DF (chyba deklinácie): DF={DF_c:.4f}")
+    print(f"FO (chyba vidlice): FO={FO_c:.4f}")
     print("\n")
 
 
