@@ -8,7 +8,10 @@ from astropy.coordinates import SkyCoord, EarthLocation, AltAz
 from astropy.time import Time
 import astropy.units as u
 
-true_params = [0.3, -0.2, 0.15, 0.1, 0.05, -0.05, 0.02, -0.01, 0.03]  # Skutočné chyby montáže
+
+#               ZH   ZD    CO    NP    MA    ME    TF     DF    FO
+true_params = [0.1, 0.1, -0.05, 0.01, -0.1, 0.1, 0.08, -0.01, 0]  # Skutočné chyby montáže
+
 
 def get_latitude():
     try:
@@ -68,8 +71,21 @@ def simulate_observation(n_stars):
     return katalog, pozorovane
 
 def simulate_observation_gaia(n_stars):
+    """
+    Vyber náhodné hviezdy z Gaia katalógu s RA, DEC.
 
-    # Definovanie ADQL dotazu pre náhodný výber hviezd
+    Zadefinuj čas a miesto pozorovania.
+
+    Spočítaj HA pre každú hviezdu podľa daného času a miesta.
+
+    Vytvor pole [HA, DEC] pre každú hviezdu.
+
+    Pridaj chybu do týchto údajov (napr. cez apply_errors).
+
+    Výstup bude napodobňovať reálne "merané" dáta.
+    """
+
+    # Vyber náhodné hviezdy z Gaia
     adql_query = f"""
     SELECT TOP {n_stars} source_id, ra, dec
     FROM gaiadr3.gaia_source
@@ -79,32 +95,23 @@ def simulate_observation_gaia(n_stars):
     job = Gaia.launch_job(adql_query)
     results = job.get_results()
 
-    # Extrakcia RA a DEC
     ra = np.array(results['ra'])
     dec = np.array(results['dec'])
+    coords = SkyCoord(ra=ra*u.deg, dec=dec*u.deg, frame='icrs')
 
-    # Vytvorenie SkyCoord objektu pre získané hviezdy
-    coords = SkyCoord(ra=ra*u.degree, dec=dec*u.degree, frame='icrs')
+    # Bratislava - pevne zadané súradnice
+    observing_location = EarthLocation(lat=48.1486*u.deg, lon=17.1077*u.deg, height=150*u.m)
+    observing_time = Time('2025-04-06T22:00:00')
 
-    # Definovanie času pozorovania a miesta (napr. Greenwich)
-    observing_time = Time('2025-04-06T22:00:00')  # Prispôsobte podľa potreby
-    observing_location = EarthLocation.of_site('greenwich')  # Alebo zadajte vlastné súradnice
-
-    # Transformácia na horizontálny systém súradníc
-    altaz = AltAz(obstime=observing_time, location=observing_location)
-    altaz_coords = coords.transform_to(altaz)
-
-    # Výpočet hodinového uhla (HA)
+    # Výpočet LST a hodinového uhla
     lst = observing_time.sidereal_time('apparent', longitude=observing_location.lon)
-    ha = (lst - coords.ra).wrap_at(12 * u.hour)  # HA v hodinách
+    ha = (lst - coords.ra).wrap_at(12 * u.hour)
+    ha_deg = ha.to(u.deg).value
 
-    # Konverzia HA na stupne
-    ha_deg = ha.to(u.degree).value
-
-    # Vytvorenie katalógu s HA a DEC
+    # Tvorba simulovaného katalógu
     katalog = np.column_stack((ha_deg, dec))
 
-    # Aplikovanie chýb na dáta (funkcia apply_errors a parameter true_params sú predpokladané)
+    # Pridanie meracích chýb
     pozorovane = apply_errors(true_params, katalog, n_stars, noise_scale=0.01)
 
     return katalog, pozorovane
@@ -265,48 +272,64 @@ def plot_residuals(res_before, res_after):
     plt.tight_layout()
     plt.show()
 
+
+def plot_scatter(ax, data, title):
+    """ Pomocná funkcia na vykreslenie scatterplotu s indexami a kružnicami. """
+    x, y = data
+    ax.scatter(x, y, color='blue', alpha=0.7)
+
+    # Pridanie indexov k bodom
+    for i, (xi, yi) in enumerate(zip(x, y), start=1):
+        ax.text(xi, yi, str(i), fontsize=9, ha='right', va='bottom', color='red')
+
+    # Pridanie kružníc znázorňujúcich uhly
+    circle1 = plt.Circle((0, 0), 0.5, color='r', fill=False, label='0.5°')
+    circle2 = plt.Circle((0, 0), 0.25, color='g', fill=False, label='0.25°')
+    circle3 = plt.Circle((0, 0), 0.05, color='b', fill=False, label='0.05°')
+
+    for circle in [circle1, circle2, circle3]:
+        ax.add_patch(circle)
+
+    x_lim = 0.65
+    y_lim = 0.65
+
+    x_max = max(x)
+    x_min = min(x)
+    y_max = max(y)
+    y_min = min(y)
+
+    d_x_max = abs(x_lim-x_max)
+    d_x_min = abs(x_lim-x_min)
+    d_y_max = abs(y_lim-y_max)
+    d_y_min = abs(y_lim-y_min)
+
+    # Nastavenie rovnakých limitov pre obe osy
+    ax.set_xlim(-(x_min+d_x_min), x_max+d_x_max)
+    ax.set_ylim(-(y_min+d_y_min), y_max+d_y_max)
+    ax.set_aspect('equal')
+
+
+    # Konfigurácia grafu
+    ax.set_xlabel("Rezíduá hodinového uhla (HA)")
+    ax.set_ylabel("Rezíduá deklinácie (DEC)")
+    ax.set_title(title)
+    ax.axhline(0, color='gray', linestyle='--', linewidth=0.5)
+    ax.axvline(0, color='gray', linestyle='--', linewidth=0.5)
+    ax.grid(True, linestyle='--', alpha=0.6)
+
+    # Legenda
+    legend_elements = [
+        Line2D([0], [0], marker='o', color='w', label='0.5°', markeredgecolor='r', markersize=15),
+        Line2D([0], [0], marker='o', color='w', label='0.25°', markeredgecolor='g', markersize=15),
+        Line2D([0], [0], marker='o', color='w', label='0.05°', markeredgecolor='b', markersize=15)
+    ]
+    ax.legend(handles=legend_elements, loc='upper right')
+
+
 def plot_residuals_comparison(res_before, res_after):
     """ Vykreslí dva scatterploty vedľa seba pre porovnanie pred a po korekcii. """
     
     fig, axs = plt.subplots(1, 2, figsize=(12, 6))
-
-    def plot_scatter(ax, data, title):
-        """ Pomocná funkcia na vykreslenie scatterplotu s indexami a kružnicami. """
-        x, y = data
-        ax.scatter(x, y, color='blue', alpha=0.7)
-
-        # Pridanie indexov k bodom
-        for i, (xi, yi) in enumerate(zip(x, y), start=1):
-            ax.text(xi, yi, str(i), fontsize=9, ha='right', va='bottom', color='red')
-
-        # Pridanie kružníc znázorňujúcich uhly
-        circle1 = plt.Circle((0, 0), 0.5, color='r', fill=False, label='0.5°')
-        circle2 = plt.Circle((0, 0), 0.25, color='g', fill=False, label='0.25°')
-        circle3 = plt.Circle((0, 0), 0.05, color='b', fill=False, label='0.05°')
-
-        for circle in [circle1, circle2, circle3]:
-            ax.add_patch(circle)
-
-        # Nastavenie rovnakých limitov pre obe osy
-        ax.set_xlim(-0.5, 0.5)
-        ax.set_ylim(-0.5, 0.5)
-        ax.set_aspect('equal')
-
-        # Konfigurácia grafu
-        ax.set_xlabel("X súradnice")
-        ax.set_ylabel("Y súradnice")
-        ax.set_title(title)
-        ax.axhline(0, color='gray', linestyle='--', linewidth=0.5)
-        ax.axvline(0, color='gray', linestyle='--', linewidth=0.5)
-        ax.grid(True, linestyle='--', alpha=0.6)
-
-        # Legenda
-        legend_elements = [
-            Line2D([0], [0], marker='o', color='w', label='0.5°', markeredgecolor='r', markersize=15),
-            Line2D([0], [0], marker='o', color='w', label='0.25°', markeredgecolor='g', markersize=15),
-            Line2D([0], [0], marker='o', color='w', label='0.05°', markeredgecolor='b', markersize=15)
-        ]
-        ax.legend(handles=legend_elements, loc='upper right')
 
     # Vykreslenie scatterplotov
     plot_scatter(axs[0], res_before, "Pred korekciou")
@@ -349,10 +372,8 @@ def main():
         mode = "file" if choice == "1" else "simulate"
 
         katalog, pozorovane = load_data(mode, n_stars)
-        print(f"{n_stars} observations loaded.")
 
         try:
-            print(n_stars, mode)
             katalog, pozorovane = load_data(mode, n_stars)
             print(f"{n_stars} observations loaded.")
             break
