@@ -1,5 +1,5 @@
 import numpy as np
-from scipy.optimize import curve_fit,minimize,leastsq
+from scipy.optimize import leastsq
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 from geopy.geocoders import Nominatim
@@ -8,16 +8,16 @@ from astropy.coordinates import SkyCoord, EarthLocation, AltAz
 from astropy.time import Time
 import astropy.units as u
 
-
 #               ZH   ZD    CO    NP    MA    ME    TF     DF    FO
 true_params = [0.1, 0.1, -0.05, 0.01, -0.1, 0.1, 0.08, -0.01, 0]  # Skutočné chyby montáže
-
 
 def get_latitude():
     try:
         geolocator = Nominatim(user_agent="geo_locator")
-        location = geolocator.geocode("Bratislava")
+        location_string = "Važec,slovakia"
+        location = geolocator.geocode(location_string)
         if location:
+            print(f"Located {location_string} on latitude {location.latitude}")
             return location.latitude
         else:
             return 48.0
@@ -44,7 +44,7 @@ def load_data(mode, n_stars):
         
 
     elif mode == "file":
-        data = np.loadtxt("./data/point_data1.txt", skiprows=1)  # Preskočí hlavičku
+        data = np.loadtxt("./data/test_data.txt", skiprows=1)  # Preskočí hlavičku
         if len(data) < n_stars:
             raise ValueError(f"File contains only {len(data)} rows of data. You required {n_stars}.")
         katalog = data[:n_stars, :2]  # HA a DEC (katalógové súradnice)
@@ -70,6 +70,12 @@ def simulate_observation(n_stars):
 
     return katalog, pozorovane
 
+def export_coords_observatoin(coordinate_array, file_name):
+    with open(file_name, "w") as f:
+        f.write(f"{'RA':>15}\t{'DEC':>15}\n")
+        for ra, dec in coordinate_array:
+            f.write(f"{ra:15.4f}\t{dec:15.4f}\n")
+
 def simulate_observation_gaia(n_stars):
     """
     Vyber náhodné hviezdy z Gaia katalógu s RA, DEC.
@@ -84,19 +90,25 @@ def simulate_observation_gaia(n_stars):
 
     Výstup bude napodobňovať reálne "merané" dáta.
     """
-
-    # Vyber náhodné hviezdy z Gaia
     adql_query = f"""
     SELECT TOP {n_stars} source_id, ra, dec
     FROM gaiadr3.gaia_source
     WHERE phot_g_mean_mag < 15
+      AND dec > -5
+      AND dec < 75
     ORDER BY random_index
     """
+
     job = Gaia.launch_job(adql_query)
     results = job.get_results()
 
     ra = np.array(results['ra'])
     dec = np.array(results['dec'])
+
+    observing_data = np.column_stack((ra, dec))
+    export_coords_observatoin(observing_data, "target_coordinates_catalog.txt")
+    
+
     coords = SkyCoord(ra=ra*u.deg, dec=dec*u.deg, frame='icrs')
 
     # Bratislava - pevne zadané súradnice
@@ -116,9 +128,9 @@ def simulate_observation_gaia(n_stars):
 
     return katalog, pozorovane
 
-def apply_errors(params, katalog, n_stars, phi=48, noise_scale=0.1):
+def apply_errors(params, catalogue, n_stars, latitude_deg=48, noise_scale=0.1):
     ZH, ZD, CO, NP, MA, ME, TF, DF, FO = params
-    HA_kat, DEC_kat = katalog[:, 0], katalog[:, 1]
+    HA_kat, DEC_kat = catalogue[:, 0], catalogue[:, 1]
     
     # Aplikácia systémových chýb
     HA_poz = (
@@ -128,8 +140,8 @@ def apply_errors(params, katalog, n_stars, phi=48, noise_scale=0.1):
         + NP * np.tan(np.radians(DEC_kat))
         - MA * np.cos(np.radians(HA_kat)) * np.tan(np.radians(DEC_kat))
         + ME * np.sin(np.radians(HA_kat)) * np.tan(np.radians(DEC_kat))
-        + TF * np.cos(np.radians(phi)) * np.sin(np.radians(HA_kat)) / np.cos(np.radians(DEC_kat))
-        - DF * (np.cos(np.radians(phi)) * np.cos(np.radians(HA_kat)) + np.sin(np.radians(phi)) * np.tan(np.radians(DEC_kat)))
+        + TF * np.cos(np.radians(latitude_deg)) * np.sin(np.radians(HA_kat)) / np.cos(np.radians(DEC_kat))
+        - DF * (np.cos(np.radians(latitude_deg)) * np.cos(np.radians(HA_kat)) + np.sin(np.radians(latitude_deg)) * np.tan(np.radians(DEC_kat)))
     )
     
     DEC_poz = (
@@ -137,8 +149,8 @@ def apply_errors(params, katalog, n_stars, phi=48, noise_scale=0.1):
         + ZD 
         + MA * np.sin(np.radians(HA_kat)) 
         + ME * np.cos(np.radians(HA_kat))
-        + TF * (np.cos(np.radians(phi)) * np.cos(np.radians(HA_kat)) * np.sin(np.radians(DEC_kat)) 
-        - np.sin(np.radians(phi)) * np.cos(np.radians(DEC_kat)))
+        + TF * (np.cos(np.radians(latitude_deg)) * np.cos(np.radians(HA_kat)) * np.sin(np.radians(DEC_kat)) 
+        - np.sin(np.radians(latitude_deg)) * np.cos(np.radians(DEC_kat)))
         + FO * np.cos(np.radians(HA_kat))
     )
     
@@ -148,40 +160,40 @@ def apply_errors(params, katalog, n_stars, phi=48, noise_scale=0.1):
     
     return np.column_stack((HA_poz, DEC_poz))
 
-def plot_cartesian_comparison_with_error_components(katalog, pozorovane, pozorovane_corrected):
+def plot_cartesian_comparison_with_error_components(catalogue, observed, observed_corrected):
     """
-    Vykreslí karteziánsky graf pre katalog, pozorovane a pozorovane_corrected,
+    Vykreslí karteziánsky graf pre catalogue, observed a observed_corrected,
     s čiarami znázorňujúcimi chyby v HA a DEC.
 
     Parametre:
     ----------
-    katalog : numpy.ndarray
+    catalogue : numpy.ndarray
         Pole tvaru (n, 2) obsahujúce HA a DEC hodnoty z katalógu.
-    pozorovane : numpy.ndarray
+    observed : numpy.ndarray
         Pole tvaru (n, 2) obsahujúce HA a DEC hodnoty pozorovaní pred korekciou.
-    pozorovane_corrected : numpy.ndarray
+    observed_corrected : numpy.ndarray
         Pole tvaru (n, 2) obsahujúce HA a DEC hodnoty pozorovaní po korekcii.
     """
-    ha_katalog, dec_katalog = katalog[:, 0], katalog[:, 1]
-    ha_pozorovane, dec_pozorovane = pozorovane[:, 0], pozorovane[:, 1]
-    ha_corrected, dec_corrected = pozorovane_corrected[:, 0], pozorovane_corrected[:, 1]
+    ha_catalogue, dec_catalogue = catalogue[:, 0], catalogue[:, 1]
+    ha_observed, dec_observed = observed[:, 0], observed[:, 1]
+    ha_corrected, dec_corrected = observed_corrected[:, 0], observed_corrected[:, 1]
 
     plt.figure(figsize=(12, 8))
 
-    plt.scatter(ha_katalog, dec_katalog, color='blue', label='Katalóg', alpha=0.6)
+    plt.scatter(ha_catalogue, dec_catalogue, color='blue', label='Katalóg', alpha=0.6)
 
-    plt.scatter(ha_pozorovane, dec_pozorovane, color='red', label='Pozorované (pred korekciou)', alpha=0.6)
-    for ha_k, dec_k, ha_p, dec_p in zip(ha_katalog, dec_katalog, ha_pozorovane, dec_pozorovane):
+    plt.scatter(ha_observed, dec_observed, color='red', label='Pozorované (pred korekciou)', alpha=0.6)
+    for ha_k, dec_k, ha_p, dec_p in zip(ha_catalogue, dec_catalogue, ha_observed, dec_observed):
         
-        plt.plot([ha_k, ha_p], [dec_k, dec_k], color='orange', linestyle='--', linewidth=1, alpha=0.6, label='Chyba HA' if ha_k == ha_katalog[0] else "")
+        plt.plot([ha_k, ha_p], [dec_k, dec_k], color='orange', linestyle='--', linewidth=1, alpha=0.6, label='Chyba HA' if ha_k == ha_catalogue[0] else "")
         
-        plt.plot([ha_p, ha_p], [dec_k, dec_p], color='purple', linestyle='--', linewidth=1, alpha=0.6, label='Chyba DEC' if ha_k == ha_katalog[0] else "")
+        plt.plot([ha_p, ha_p], [dec_k, dec_p], color='purple', linestyle='--', linewidth=1, alpha=0.6, label='Chyba DEC' if ha_k == ha_catalogue[0] else "")
         
         plt.text(ha_p, dec_k, f"HA: {ha_p - ha_k:.2f}", color='orange', fontsize=8, ha='left', va='bottom')
         plt.text(ha_p, dec_p, f"DEC: {dec_p - dec_k:.2f}", color='purple', fontsize=8, ha='left', va='bottom')
 
     plt.scatter(ha_corrected, dec_corrected, color='green', label='Pozorované (po korekcii)', alpha=0.6)
-    for ha_k, dec_k, ha_c, dec_c in zip(ha_katalog, dec_katalog, ha_corrected, dec_corrected):
+    for ha_k, dec_k, ha_c, dec_c in zip(ha_catalogue, dec_catalogue, ha_corrected, dec_corrected):
         
         plt.plot([ha_k, ha_c], [dec_k, dec_k], color='orange', linestyle='--', linewidth=1, alpha=0.6)
         
@@ -198,56 +210,85 @@ def plot_cartesian_comparison_with_error_components(katalog, pozorovane, pozorov
 
     plt.show()
 
-def compute_residuals(katalog, pozorovane, pozorovane_corrected):
+def compute_residuals(catalogue, observed, observed_corrected):
     # Rezíduá pred korekciou
-    res_ha_before = pozorovane[:, 0] - katalog[:, 0]
-    res_dec_before = pozorovane[:, 1] - katalog[:, 1]
+    res_ha_before = observed[:, 0] - catalogue[:, 0]
+    res_dec_before = observed[:, 1] - catalogue[:, 1]
     
     # Rezíduá po korekcii
-    res_ha_after = pozorovane_corrected[:, 0] - katalog[:, 0]
-    res_dec_after = pozorovane_corrected[:, 1] - katalog[:, 1]
+    res_ha_after = observed_corrected[:, 0] - catalogue[:, 0]
+    res_dec_after = observed_corrected[:, 1] - catalogue[:, 1]
     
     return (res_ha_before, res_dec_before), (res_ha_after, res_dec_after)
 
-def error_function(params, katalog, pozorovane, latitude):
+def error_function(params, catalogue, observed, latitude_deg):
     ZH, ZD, CO, NP, MA, ME, TF, DF, FO = params
 
-    t_kat, d_kat = katalog[:, 0], katalog[:, 1]
-    t_poz, d_poz = pozorovane[:, 0], pozorovane[:, 1]
+    t_catalogue, d_catalogue = catalogue[:, 0], catalogue[:, 1]
+    t_observed, d_observed = observed[:, 0], observed[:, 1]
     
-    t_corr = t_poz - (t_kat + ZH + CO / np.cos(np.radians(d_kat)) + NP * np.tan(np.radians(d_kat))
-                     - MA * np.cos(np.radians(t_kat)) * np.tan(np.radians(d_kat))
-                     + ME * np.sin(np.radians(t_kat)) * np.tan(np.radians(d_kat))
-                     + TF * np.cos(np.radians(latitude)) * np.sin(np.radians(t_kat)) / np.cos(np.radians(d_kat))
-                     - DF * (np.cos(np.radians(latitude)) * np.cos(np.radians(t_kat)) + np.sin(np.radians(latitude)) * np.tan(np.radians(d_kat)) ))
+    t_corr = t_observed - (t_catalogue + ZH + CO / np.cos(np.radians(d_catalogue)) + NP * np.tan(np.radians(d_catalogue))
+                     - MA * np.cos(np.radians(t_catalogue)) * np.tan(np.radians(d_catalogue))
+                     + ME * np.sin(np.radians(t_catalogue)) * np.tan(np.radians(d_catalogue))
+                     + TF * np.cos(np.radians(latitude_deg)) * np.sin(np.radians(t_catalogue)) / np.cos(np.radians(d_catalogue))
+                     - DF * (np.cos(np.radians(latitude_deg)) * np.cos(np.radians(t_catalogue)) + np.sin(np.radians(latitude_deg)) * np.tan(np.radians(d_catalogue)) ))
     
-    d_corr = d_poz - (d_kat + ZD + MA * np.sin(np.radians(t_kat)) + ME * np.cos(np.radians(t_kat))
-                     + TF * (np.cos(np.radians(latitude)) * np.cos(np.radians(t_kat)) * np.sin(np.radians(d_kat)) - np.sin(np.radians(48)) * np.cos(np.radians(d_kat)))
-                     + FO * np.cos(np.radians(t_kat)))
+    d_corr = d_observed - (d_catalogue + ZD + MA * np.sin(np.radians(t_catalogue)) + ME * np.cos(np.radians(t_catalogue))
+                     + TF * (np.cos(np.radians(latitude_deg)) * np.cos(np.radians(t_catalogue)) * np.sin(np.radians(d_catalogue)) - np.sin(np.radians(latitude_deg)) * np.cos(np.radians(d_catalogue)))
+                     + FO * np.cos(np.radians(t_catalogue)))
     
     return np.concatenate((t_corr, d_corr))
 
-def calculate_corrected_coords(params, pozorovane, phi):
+def calculate_corrected_coords(params, observed, latitude_deg):
     ZH, ZD, CO, NP, MA, ME, TF, DF, FO = params
-    t_poz, d_poz = pozorovane[:, 0], pozorovane[:, 1]
+    t_observed, d_poz = observed[:, 0], observed[:, 1]
     
     # Korekcia: Od nameraných hodnôt ODČÍTAME chyby montáže
-    t_corr = t_poz - (ZH + CO / np.cos(np.radians(d_poz)) + NP * np.tan(np.radians(d_poz))
-                     - MA * np.cos(np.radians(t_poz)) * np.tan(np.radians(d_poz))
-                     + ME * np.sin(np.radians(t_poz)) * np.tan(np.radians(d_poz))
-                     + TF * np.cos(np.radians(phi)) * np.sin(np.radians(t_poz)) / np.cos(np.radians(d_poz))
-                     - DF * (np.cos(np.radians(phi)) * np.cos(np.radians(t_poz)) + np.sin(np.radians(phi)) * np.tan(np.radians(d_poz)) )
+    t_corr = t_observed - (ZH + CO / np.cos(np.radians(d_poz)) + NP * np.tan(np.radians(d_poz))
+                     - MA * np.cos(np.radians(t_observed)) * np.tan(np.radians(d_poz))
+                     + ME * np.sin(np.radians(t_observed)) * np.tan(np.radians(d_poz))
+                     + TF * np.cos(np.radians(latitude_deg)) * np.sin(np.radians(t_observed)) / np.cos(np.radians(d_poz))
+                     - DF * (np.cos(np.radians(latitude_deg)) * np.cos(np.radians(t_observed)) + np.sin(np.radians(latitude_deg)) * np.tan(np.radians(d_poz)) )
     )
     
-    d_corr = d_poz - (ZD + MA * np.sin(np.radians(t_poz)) + ME * np.cos(np.radians(t_poz))
-                     + TF * (np.cos(np.radians(phi)) * np.cos(np.radians(t_poz)) * np.sin(np.radians(d_poz)) 
-                     - np.sin(np.radians(phi)) * np.cos(np.radians(d_poz)))
-                     + FO * np.cos(np.radians(t_poz)))
+    d_corr = d_poz - (ZD + MA * np.sin(np.radians(t_observed)) + ME * np.cos(np.radians(t_observed))
+                     + TF * (np.cos(np.radians(latitude_deg)) * np.cos(np.radians(t_observed)) * np.sin(np.radians(d_poz)) 
+                     - np.sin(np.radians(latitude_deg)) * np.cos(np.radians(d_poz)))
+                     + FO * np.cos(np.radians(t_observed)))
     
-    pozorovane_corrected = np.column_stack((t_corr, d_corr))
+    observed_corrected = np.column_stack((t_corr, d_corr))
 
     
-    return pozorovane_corrected
+    return observed_corrected
+
+def correct_target_coordinates(params, catalog_coords, latitude_deg):
+    
+    ZH, ZD, CO, NP, MA, ME, TF, DF, FO = params
+    HA_cat, DEC_cat = catalog_coords[:, 0], catalog_coords[:, 1]
+
+    # Pridáme chyby ako "anti-chyby" aby teleskop mieril správne
+    HA_corr = HA_cat + (
+        ZH
+        + CO / np.cos(np.radians(DEC_cat))
+        + NP * np.tan(np.radians(DEC_cat))
+        - MA * np.cos(np.radians(HA_cat)) * np.tan(np.radians(DEC_cat))
+        + ME * np.sin(np.radians(HA_cat)) * np.tan(np.radians(DEC_cat))
+        + TF * np.cos(np.radians(latitude_deg)) * np.sin(np.radians(HA_cat)) / np.cos(np.radians(DEC_cat))
+        - DF * (np.cos(np.radians(latitude_deg)) * np.cos(np.radians(HA_cat)) + np.sin(np.radians(latitude_deg)) * np.tan(np.radians(DEC_cat)))
+    )
+
+    DEC_corr = DEC_cat + (
+        ZD
+        + MA * np.sin(np.radians(HA_cat))
+        + ME * np.cos(np.radians(HA_cat))
+        + TF * (np.cos(np.radians(latitude_deg)) * np.cos(np.radians(HA_cat)) * np.sin(np.radians(DEC_cat)) - np.sin(np.radians(latitude_deg)) * np.cos(np.radians(DEC_cat)))
+        + FO * np.cos(np.radians(HA_cat))
+    )
+
+    corrected_targets = np.column_stack((HA_corr, DEC_corr))
+
+    export_coords_observatoin(corrected_targets,"target_coordinate.txt")
+    return corrected_targets
 
 def plot_residuals(res_before, res_after):
     fig, ax = plt.subplots(2, 1, figsize=(10, 8))
@@ -272,9 +313,7 @@ def plot_residuals(res_before, res_after):
     plt.tight_layout()
     plt.show()
 
-
 def plot_scatter(ax, data, title):
-    """ Pomocná funkcia na vykreslenie scatterplotu s indexami a kružnicami. """
     x, y = data
     ax.scatter(x, y, color='blue', alpha=0.7)
 
@@ -286,8 +325,10 @@ def plot_scatter(ax, data, title):
     circle1 = plt.Circle((0, 0), 0.5, color='r', fill=False, label='0.5°')
     circle2 = plt.Circle((0, 0), 0.25, color='g', fill=False, label='0.25°')
     circle3 = plt.Circle((0, 0), 0.05, color='b', fill=False, label='0.05°')
+    circle4 = plt.Circle((0, 0), 0.025, color='y', fill=False, label='0.025°')
+    circle5 = plt.Circle((0, 0), 0.005, color='m', fill=False, label='0.005°')
 
-    for circle in [circle1, circle2, circle3]:
+    for circle in [circle1, circle2, circle3, circle4, circle5]:
         ax.add_patch(circle)
 
     x_lim = 0.65
@@ -321,10 +362,11 @@ def plot_scatter(ax, data, title):
     legend_elements = [
         Line2D([0], [0], marker='o', color='w', label='0.5°', markeredgecolor='r', markersize=15),
         Line2D([0], [0], marker='o', color='w', label='0.25°', markeredgecolor='g', markersize=15),
-        Line2D([0], [0], marker='o', color='w', label='0.05°', markeredgecolor='b', markersize=15)
+        Line2D([0], [0], marker='o', color='w', label='0.05°', markeredgecolor='b', markersize=15),
+        Line2D([0], [0], marker='o', color='w', label='0.025°', markeredgecolor='y', markersize=15),
+        Line2D([0], [0], marker='o', color='w', label='0.005°', markeredgecolor='m', markersize=15),
     ]
     ax.legend(handles=legend_elements, loc='upper right')
-
 
 def plot_residuals_comparison(res_before, res_after):
     """ Vykreslí dva scatterploty vedľa seba pre porovnanie pred a po korekcii. """
@@ -332,8 +374,8 @@ def plot_residuals_comparison(res_before, res_after):
     fig, axs = plt.subplots(1, 2, figsize=(12, 6))
 
     # Vykreslenie scatterplotov
-    plot_scatter(axs[0], res_before, "Pred korekciou")
-    plot_scatter(axs[1], res_after, "Po korekcii")
+    plot_scatter(axs[0], res_before, "Without correction")
+    plot_scatter(axs[1], res_after, "With correction")
 
     # Úprava rozloženia
     plt.tight_layout()
@@ -383,7 +425,7 @@ def main():
     latitude = get_latitude()
 
     optimal_params, _ = leastsq(error_function, initial_params, args=(katalog, pozorovane, latitude))
-    pozorovane_corrected = calculate_corrected_coords(optimal_params, pozorovane, 48)
+    pozorovane_corrected = calculate_corrected_coords(optimal_params, pozorovane, latitude)
 
     #Výpis prvej tabulky súradnice
     print(f"{'HA':>10}\t\t{'DEC':>10}\t\t\t{'HA_o':>10}\t\t\t{'DEC_o':>10}\t\t\t{'HA_c':>10}\t\t\t{'DEC_c':>10}")
@@ -396,8 +438,7 @@ def main():
         f.write(f"{'HA':>15}\t{'DEC':>15}\t{'HA_corrected':>15}\t{'DEC_corrected':>15}\n")
         for (ha, dec), (ha_c, dec_c) in zip(katalog, pozorovane_corrected):
             f.write(f"{ha:15.4f}\t{dec:15.4f}\t{ha_c:15.4f}\t{dec_c:15.4f}\n")
-
-
+    
     res_before, res_after = compute_residuals(katalog, pozorovane, pozorovane_corrected)
     res_ha_before, res_dec_before = res_before
     res_ha_after, res_dec_after = res_after
@@ -445,6 +486,8 @@ def main():
     print(f"DF (chyba deklinácie): DF={DF_c:.4f}")
     print(f"FO (chyba vidlice): FO={FO_c:.4f}")
     print("\n")
+
+    correct_target_coordinates(optimal_params, katalog, latitude)
 
 
 if __name__ == "__main__":
