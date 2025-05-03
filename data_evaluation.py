@@ -7,9 +7,15 @@ from astroquery.gaia import Gaia
 from astropy.coordinates import SkyCoord, EarthLocation, AltAz
 from astropy.time import Time
 import astropy.units as u
+from astropy.coordinates import EarthLocation, SkyCoord
+from astropy.time import Time
+import astropy.units as u
+from geopy.geocoders import Nominatim
+
 
 #               ZH   ZD    CO    NP    MA    ME    TF     DF    FO
-true_params = [0.1, 0.1, -0.05, 0.01, -0.1, 0.1, 0.08, -0.01, 0]  # Skutočné chyby montáže
+#true_params = [0.1, 0.1, -0.05, 0.01, -0.1, 0.1, 0.08, -0.01, 0]  #Simulacia
+true_params = [-0.1424, -0.0141, -0.0583, 0.002, -0.2551, 0.1394, 0.0144, 0.2313, -0.2458]  #Približne skutočné 
 
 def get_latitude():
     try:
@@ -24,6 +30,38 @@ def get_latitude():
     except Exception as e:
         print(f"Chyba pri geolokácii: {e}")
         return 48.0
+    
+def ra_to_ha(ra, observing_time_str):
+    """
+    Prepočet RA na HA pre lokalitu načítanú cez get_latitude().
+
+    Args:
+        ra (float): Rektascenzia v stupňoch (0 - 360).
+        observing_time_str (str): Čas pozorovania v ISO formáte, napr. '2025-04-06T22:00:00'.
+
+    Returns:
+        float: Hodinový uhol v stupňoch (-180° až +180°).
+    """
+    # Získanie dynamickej šírky
+    latitude = get_latitude()
+
+    # Lokalita (šírka dynamická, ostatné pevné)
+    observing_location = EarthLocation(lat=latitude*u.deg, lon=17.1077*u.deg, height=150*u.m)
+    
+    # Čas pozorovania
+    observing_time = Time(observing_time_str)
+
+    # Výpočet miestneho hviezdneho času (LST)
+    lst = observing_time.sidereal_time('apparent', longitude=observing_location.lon)
+
+    # Prevod RA na SkyCoord
+    coords = SkyCoord(ra=ra*u.deg, dec=0*u.deg, frame='icrs')  # DEC tu nehrá rolu
+
+    # Výpočet HA
+    ha = (lst - coords.ra).wrap_at(12 * u.hour)
+    ha_deg = ha.to(u.deg).value
+
+    return ha_deg
 
 def load_data(mode, n_stars):
     """
@@ -44,7 +82,7 @@ def load_data(mode, n_stars):
         
 
     elif mode == "file":
-        data = np.loadtxt("./data/test_data.txt", skiprows=1)  # Preskočí hlavičku
+        data = np.loadtxt("./data/test_data_sim.txt", skiprows=1)  # Preskočí hlavičku
         if len(data) < n_stars:
             raise ValueError(f"File contains only {len(data)} rows of data. You required {n_stars}.")
         katalog = data[:n_stars, :2]  # HA a DEC (katalógové súradnice)
@@ -55,26 +93,16 @@ def load_data(mode, n_stars):
 
     return katalog, pozorovane
 
-def simulate_observation(n_stars):
-    # Hodinový uhol (preferovane okolo ± 4 hodín, teda ~±60°)
-    HA_kat = np.random.normal(loc=0, scale=60, size=n_stars)
-    HA_kat = np.clip(HA_kat, -180, 180)  # Orezanie na platný rozsah
-
-    # Deklinácia (sinusové rozdelenie)
-    DEC_kat = np.arcsin(np.random.uniform(-1, 1, n_stars)) * (180 / np.pi)
-
-    katalog = np.column_stack((HA_kat, DEC_kat))
-
-    # Aplikovanie chýb na simulované dáta
-    pozorovane = apply_errors(true_params, katalog, n_stars, noise_scale=0.01)
-
-    return katalog, pozorovane
-
-def export_coords_observatoin(coordinate_array, file_name):
+def export_coords_observation(coordinate_array, file_name, header):
     with open(file_name, "w") as f:
-        f.write(f"{'RA':>15}\t{'DEC':>15}\n")
-        for ra, dec in coordinate_array:
-            f.write(f"{ra:15.4f}\t{dec:15.4f}\n")
+        # Zapíš hlavičku
+        header_line = "\t".join(f"{col:>15}" for col in header)
+        f.write(header_line + "\n")
+        
+        # Zapíš dáta
+        for row in coordinate_array:
+            row_line = "\t".join(f"{val:15.4f}" for val in row)
+            f.write(row_line + "\n")
 
 def simulate_observation_gaia(n_stars):
     """
@@ -106,29 +134,21 @@ def simulate_observation_gaia(n_stars):
     dec = np.array(results['dec'])
 
     observing_data = np.column_stack((ra, dec))
-    export_coords_observatoin(observing_data, "target_coordinates_catalog.txt")
-    
-
-    coords = SkyCoord(ra=ra*u.deg, dec=dec*u.deg, frame='icrs')
-
-    # Bratislava - pevne zadané súradnice
-    observing_location = EarthLocation(lat=48.1486*u.deg, lon=17.1077*u.deg, height=150*u.m)
-    observing_time = Time('2025-04-06T22:00:00')
-
-    # Výpočet LST a hodinového uhla
-    lst = observing_time.sidereal_time('apparent', longitude=observing_location.lon)
-    ha = (lst - coords.ra).wrap_at(12 * u.hour)
-    ha_deg = ha.to(u.deg).value
+    export_coords_observation(observing_data, "target_coordinates_catalog_RA_DEC.txt", ["RA", "DEC"])
+ 
+    ha_deg = ra_to_ha(ra, "2025-04-19T20:00:00")
 
     # Tvorba simulovaného katalógu
     katalog = np.column_stack((ha_deg, dec))
+
+    export_coords_observation(katalog, "target_coordinates_catalog_HA_DEC.txt", ["HA", "DEC"])
 
     # Pridanie meracích chýb
     pozorovane = apply_errors(true_params, katalog, n_stars, noise_scale=0.01)
 
     return katalog, pozorovane
 
-def apply_errors(params, catalogue, n_stars, latitude_deg=48, noise_scale=0.1):
+def apply_errors(params, catalogue, n_stars, latitude_deg=get_latitude(), noise_scale=0.1):
     ZH, ZD, CO, NP, MA, ME, TF, DF, FO = params
     HA_kat, DEC_kat = catalogue[:, 0], catalogue[:, 1]
     
@@ -154,7 +174,6 @@ def apply_errors(params, catalogue, n_stars, latitude_deg=48, noise_scale=0.1):
         + FO * np.cos(np.radians(HA_kat))
     )
     
-    # Pridajte náhodný šum (napr. Gaussovský s σ=0.1°)
     HA_poz += np.random.normal(0, noise_scale, n_stars)
     DEC_poz += np.random.normal(0, noise_scale, n_stars)
     
@@ -258,7 +277,6 @@ def calculate_corrected_coords(params, observed, latitude_deg):
     
     observed_corrected = np.column_stack((t_corr, d_corr))
 
-    
     return observed_corrected
 
 def correct_target_coordinates(params, catalog_coords, latitude_deg):
@@ -267,7 +285,7 @@ def correct_target_coordinates(params, catalog_coords, latitude_deg):
     HA_cat, DEC_cat = catalog_coords[:, 0], catalog_coords[:, 1]
 
     # Pridáme chyby ako "anti-chyby" aby teleskop mieril správne
-    HA_corr = HA_cat + (
+    HA_corr = HA_cat - (
         ZH
         + CO / np.cos(np.radians(DEC_cat))
         + NP * np.tan(np.radians(DEC_cat))
@@ -277,7 +295,7 @@ def correct_target_coordinates(params, catalog_coords, latitude_deg):
         - DF * (np.cos(np.radians(latitude_deg)) * np.cos(np.radians(HA_cat)) + np.sin(np.radians(latitude_deg)) * np.tan(np.radians(DEC_cat)))
     )
 
-    DEC_corr = DEC_cat + (
+    DEC_corr = DEC_cat - (
         ZD
         + MA * np.sin(np.radians(HA_cat))
         + ME * np.cos(np.radians(HA_cat))
@@ -287,7 +305,14 @@ def correct_target_coordinates(params, catalog_coords, latitude_deg):
 
     corrected_targets = np.column_stack((HA_corr, DEC_corr))
 
-    export_coords_observatoin(corrected_targets,"target_coordinate.txt")
+    combined = np.column_stack((HA_cat, DEC_cat, HA_corr, DEC_corr))
+
+    export_coords_observation(
+        combined,
+        "corrected_target_coordinates.txt",
+        ["HA_cat", "DEC_cat", "HA_corr", "DEC_corr"]
+    )
+
     return corrected_targets
 
 def plot_residuals(res_before, res_after):
@@ -296,7 +321,7 @@ def plot_residuals(res_before, res_after):
     # Hodinový uhol (HA)
     ax[0].scatter(range(len(res_before[0])), res_before[0], c='r', label='Pred korekciou')
     ax[0].scatter(range(len(res_after[0])), res_after[0], c='g', marker='x', label='Po korekcii')
-    ax[0].set_title('Rezíduá hodinového uhla (HA)')
+    ax[0].set_title('Hour angle residuals (HA)')
     ax[0].set_ylabel('Odchýlka [°]')
     ax[0].legend()
     ax[0].grid(True)
@@ -304,7 +329,7 @@ def plot_residuals(res_before, res_after):
     # Deklinácia (DEC)
     ax[1].scatter(range(len(res_before[1])), res_before[1], c='r', label='Pred korekciou')
     ax[1].scatter(range(len(res_after[1])), res_after[1], c='g', marker='x', label='Po korekcii')
-    ax[1].set_title('Rezíduá deklinácie (DEC)')
+    ax[1].set_title('Declination residuals (DEC)')
     ax[1].set_xlabel('Číslo hviezdy')
     ax[1].set_ylabel('Odchýlka [°]')
     ax[1].legend()
@@ -325,10 +350,9 @@ def plot_scatter(ax, data, title):
     circle1 = plt.Circle((0, 0), 0.5, color='r', fill=False, label='0.5°')
     circle2 = plt.Circle((0, 0), 0.25, color='g', fill=False, label='0.25°')
     circle3 = plt.Circle((0, 0), 0.05, color='b', fill=False, label='0.05°')
-    circle4 = plt.Circle((0, 0), 0.025, color='y', fill=False, label='0.025°')
-    circle5 = plt.Circle((0, 0), 0.005, color='m', fill=False, label='0.005°')
+    circle4 = plt.Circle((0, 0), 0.025, color='m', fill=False, label='0.025°')
 
-    for circle in [circle1, circle2, circle3, circle4, circle5]:
+    for circle in [circle1, circle2, circle3, circle4]:
         ax.add_patch(circle)
 
     x_lim = 0.65
@@ -351,8 +375,8 @@ def plot_scatter(ax, data, title):
 
 
     # Konfigurácia grafu
-    ax.set_xlabel("Rezíduá hodinového uhla (HA)")
-    ax.set_ylabel("Rezíduá deklinácie (DEC)")
+    ax.set_xlabel("Hour angle residuals (HA)[°]")
+    ax.set_ylabel("Declination residuals (DEC)[°]")
     ax.set_title(title)
     ax.axhline(0, color='gray', linestyle='--', linewidth=0.5)
     ax.axvline(0, color='gray', linestyle='--', linewidth=0.5)
@@ -363,8 +387,7 @@ def plot_scatter(ax, data, title):
         Line2D([0], [0], marker='o', color='w', label='0.5°', markeredgecolor='r', markersize=15),
         Line2D([0], [0], marker='o', color='w', label='0.25°', markeredgecolor='g', markersize=15),
         Line2D([0], [0], marker='o', color='w', label='0.05°', markeredgecolor='b', markersize=15),
-        Line2D([0], [0], marker='o', color='w', label='0.025°', markeredgecolor='y', markersize=15),
-        Line2D([0], [0], marker='o', color='w', label='0.005°', markeredgecolor='m', markersize=15),
+        Line2D([0], [0], marker='o', color='w', label='0.025°', markeredgecolor='m', markersize=15),
     ]
     ax.legend(handles=legend_elements, loc='upper right')
 
@@ -380,6 +403,74 @@ def plot_residuals_comparison(res_before, res_after):
     # Úprava rozloženia
     plt.tight_layout()
     plt.show()
+
+
+
+
+
+def calculate_rms_residuals(res_before, res_after):
+    """
+    Vypočíta RMS rezíduí pre HA a DEC pred a po korekcii v stupňoch a arcsekundách.
+    
+    Parametre:
+        res_before (tuple): Rezíduá pred korekciou (res_ha_before, res_dec_before).
+        res_after (tuple): Rezíduá po korekcii (res_ha_after, res_dec_after).
+    
+    Vráti:
+        tuple: RMS hodnoty v tvare (rms_ha_before_deg, rms_dec_before_deg, 
+               rms_ha_after_deg, rms_dec_after_deg,
+               rms_ha_before_arcsec, rms_dec_before_arcsec,
+               rms_ha_after_arcsec, rms_dec_after_arcsec)
+    """
+    res_ha_before, res_dec_before = res_before
+    res_ha_after, res_dec_after = res_after
+    
+    # Výpočet RMS v stupňoch
+    rms_ha_before_deg = np.sqrt(np.mean(res_ha_before**2))
+    rms_dec_before_deg = np.sqrt(np.mean(res_dec_before**2))
+    rms_ha_after_deg = np.sqrt(np.mean(res_ha_after**2))
+    rms_dec_after_deg = np.sqrt(np.mean(res_dec_after**2))
+    
+    # Konverzia na oblúkové sekundy (1° = 3600″)
+    rms_ha_before_arcsec = rms_ha_before_deg * 3600
+    rms_dec_before_arcsec = rms_dec_before_deg * 3600
+    rms_ha_after_arcsec = rms_ha_after_deg * 3600
+    rms_dec_after_arcsec = rms_dec_after_deg * 3600
+    
+    return (rms_ha_before_deg, rms_dec_before_deg, 
+            rms_ha_after_deg, rms_dec_after_deg,
+            rms_ha_before_arcsec, rms_dec_before_arcsec,
+            rms_ha_after_arcsec, rms_dec_after_arcsec)
+
+def print_rms_results(rms_results):
+    """
+    Vypíše RMS rezíduá do konzoly s jednotkami v stupňoch aj arcsekundách.
+    """
+    (rms_ha_before_deg, rms_dec_before_deg, 
+     rms_ha_after_deg, rms_dec_after_deg,
+     rms_ha_before_arcsec, rms_dec_before_arcsec,
+     rms_ha_after_arcsec, rms_dec_after_arcsec) = rms_results
+    
+    print("\n" + "="*80)
+    print("RMS REZIDUÁ".center(80))
+    print("="*80)
+    print(f"{'':<20}{'Pred korekciou':<30}{'Po korekcii':<30}")
+    print(f"{'HA (hodinový uhol)':<20}{rms_ha_before_deg:.6f}° ({rms_ha_before_arcsec:.2f}″){'':<10}{rms_ha_after_deg:.6f}° ({rms_ha_after_arcsec:.2f}″)")
+    print(f"{'DEC (deklinácia)':<20}{rms_dec_before_deg:.6f}° ({rms_dec_before_arcsec:.2f}″){'':<10}{rms_dec_after_deg:.6f}° ({rms_dec_after_arcsec:.2f}″)")
+    print("="*80 + "\n")
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 def main():
     # Počiatočné odhady korekčných faktorov (9 neznámych parametrov)
@@ -425,6 +516,7 @@ def main():
     latitude = get_latitude()
 
     optimal_params, _ = leastsq(error_function, initial_params, args=(katalog, pozorovane, latitude))
+
     pozorovane_corrected = calculate_corrected_coords(optimal_params, pozorovane, latitude)
 
     #Výpis prvej tabulky súradnice
@@ -432,12 +524,6 @@ def main():
     for (ha, dec), (ha_o, dec_o), (ha_c, dec_c) in zip(katalog, pozorovane, pozorovane_corrected):
         print(f"{ha:10.4f}\t\t{dec:10.4f}\t\t\t{ha_o:10.4f}\t\t\t{dec_o:10.4f}\t\t\t{ha_c:10.4f}\t\t\t{dec_c:10.4f}")
     print("\n")
-
-
-    with open("data.txt", "w") as f:
-        f.write(f"{'HA':>15}\t{'DEC':>15}\t{'HA_corrected':>15}\t{'DEC_corrected':>15}\n")
-        for (ha, dec), (ha_c, dec_c) in zip(katalog, pozorovane_corrected):
-            f.write(f"{ha:15.4f}\t{dec:15.4f}\t{ha_c:15.4f}\t{dec_c:15.4f}\n")
     
     res_before, res_after = compute_residuals(katalog, pozorovane, pozorovane_corrected)
     res_ha_before, res_dec_before = res_before
@@ -449,9 +535,31 @@ def main():
         print(f"\t\t\t\t\t\t\t{ha:10.4f}\t\t\t{dec:10.4f}\t\t\t{ha_c:10.4f}\t\t\t{dec_c:10.4f}")
 
 
-    plot_residuals_comparison(res_before, res_after)
-    plot_cartesian_comparison_with_error_components(katalog, pozorovane, pozorovane_corrected)
+    # Vypočítaj a vypíš RMS rezíduá
+    rms_results = calculate_rms_residuals(res_before, res_after)
+    print_rms_results(rms_results)
 
+
+
+
+
+
+
+
+    output_path = "./output"
+
+    fig, ax = plt.subplots(figsize=(8, 8))
+    plot_scatter(ax, res_before, f"Without correction, n_stars={n_stars}")
+    plt.savefig(f'{output_path}/sim_residuals_before.pdf', format='pdf', bbox_inches='tight', pad_inches=0)
+    plt.close()
+    fig, ax = plt.subplots(figsize=(8, 8))
+    plot_scatter(ax, res_after, f"With correction, n_stars={n_stars}")
+    plt.savefig(f'{output_path}/sim_residuals_after.pdf', format='pdf', bbox_inches='tight', pad_inches=0)
+    plt.close()
+
+
+    plot_residuals_comparison(res_before, res_after)
+    #plot_cartesian_comparison_with_error_components(katalog, pozorovane, pozorovane_corrected)
     # Výpis výsledkov
     
     ZH_c, ZD_c, CO_c, NP_c, MA_c, ME_c, TF_c, DF_c, FO_c = optimal_params
