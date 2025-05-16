@@ -64,34 +64,24 @@ def ra_to_ha(ra, observing_time_str):
     return ha_deg
 
 def load_data(mode, n_stars):
-    """
-    Načíta dáta buď zo súboru, alebo vygeneruje simulované pozorovania.
-
-    Parametre:
-        mode (str): "file" pre načítanie zo súboru, "simulate" pre generovanie dát.
-        n_stars (int): Počet hviezd na simuláciu alebo počet riadkov zo súboru.
-    
-    Výstup:
-        tuple: (katalógové súradnice, pozorované súradnice)
-    """
     if n_stars <= 0:
         raise ValueError("Number of observations has to be a non zero value.")
 
     if mode == "simulate":
-        katalog, pozorovane = simulate_observation_gaia(n_stars)
+        catalogue, observed = simulate_observation_gaia(n_stars)
         
 
     elif mode == "file":
         data = np.loadtxt("./data/test_data_sim.txt", skiprows=1)  # Preskočí hlavičku
         if len(data) < n_stars:
             raise ValueError(f"File contains only {len(data)} rows of data. You required {n_stars}.")
-        katalog = data[:n_stars, :2]  # HA a DEC (katalógové súradnice)
-        pozorovane = data[:n_stars, 2:]  # HA_PNT a DEC_PNT (pozorované súradnice)
+        catalogue = data[:n_stars, :2]  # HA a DEC (katalógové súradnice)
+        observed = data[:n_stars, 2:]  # HA_PNT a DEC_PNT (pozorované súradnice)
 
     else:
         raise ValueError('Invalid mode. Please use ".')
 
-    return katalog, pozorovane
+    return catalogue, observed
 
 def export_coords_observation(coordinate_array, file_name, header):
     with open(file_name, "w") as f:
@@ -139,14 +129,23 @@ def simulate_observation_gaia(n_stars):
     ha_deg = ra_to_ha(ra, "2025-04-19T20:00:00")
 
     # Tvorba simulovaného katalógu
-    katalog = np.column_stack((ha_deg, dec))
+    catalogue = np.column_stack((ha_deg, dec))
 
-    export_coords_observation(katalog, "target_coordinates_catalog_HA_DEC.txt", ["HA", "DEC"])
+    export_coords_observation(catalogue, "target_coordinates_catalog_HA_DEC.txt", ["HA", "DEC"])
 
     # Pridanie meracích chýb
-    pozorovane = apply_errors(true_params, katalog, n_stars, noise_scale=0.01)
+    observed = apply_errors(true_params, catalogue, n_stars, noise_scale=0.01)
 
-    return katalog, pozorovane
+    combined = np.column_stack((catalogue, observed))
+
+    export_coords_observation(
+        combined,
+        "catalog_vs_observed_simulation.txt",
+        ["HA_cat", "DEC_cat", "HA_o", "DEC_o"]
+    )
+
+
+    return catalogue, observed
 
 def apply_errors(params, catalogue, n_stars, latitude_deg=get_latitude(), noise_scale=0.1):
     ZH, ZD, CO, NP, MA, ME, TF, DF, FO = params
@@ -179,7 +178,7 @@ def apply_errors(params, catalogue, n_stars, latitude_deg=get_latitude(), noise_
     
     return np.column_stack((HA_poz, DEC_poz))
 
-def plot_cartesian_comparison_with_error_components(catalogue, observed, observed_corrected):
+def plot_cartesian_comparison_with_error_components(catalogue, observed, observed_corrected, n_stars):
     """
     Vykreslí karteziánsky graf pre catalogue, observed a observed_corrected,
     s čiarami znázorňujúcimi chyby v HA a DEC.
@@ -199,19 +198,19 @@ def plot_cartesian_comparison_with_error_components(catalogue, observed, observe
 
     plt.figure(figsize=(12, 8))
 
-    plt.scatter(ha_catalogue, dec_catalogue, color='blue', label='Katalóg', alpha=0.6)
+    plt.scatter(ha_catalogue, dec_catalogue, color='blue', label='Catalogue', alpha=0.6)
 
-    plt.scatter(ha_observed, dec_observed, color='red', label='Pozorované (pred korekciou)', alpha=0.6)
+    plt.scatter(ha_observed, dec_observed, color='red', label='Observed (prior to correction)', alpha=0.6)
     for ha_k, dec_k, ha_p, dec_p in zip(ha_catalogue, dec_catalogue, ha_observed, dec_observed):
         
-        plt.plot([ha_k, ha_p], [dec_k, dec_k], color='orange', linestyle='--', linewidth=1, alpha=0.6, label='Chyba HA' if ha_k == ha_catalogue[0] else "")
+        plt.plot([ha_k, ha_p], [dec_k, dec_k], color='orange', linestyle='--', linewidth=1, alpha=0.6, label='Error HA' if ha_k == ha_catalogue[0] else "")
         
-        plt.plot([ha_p, ha_p], [dec_k, dec_p], color='purple', linestyle='--', linewidth=1, alpha=0.6, label='Chyba DEC' if ha_k == ha_catalogue[0] else "")
+        plt.plot([ha_p, ha_p], [dec_k, dec_p], color='purple', linestyle='--', linewidth=1, alpha=0.6, label='Error DEC' if ha_k == ha_catalogue[0] else "")
         
         plt.text(ha_p, dec_k, f"HA: {ha_p - ha_k:.2f}", color='orange', fontsize=8, ha='left', va='bottom')
         plt.text(ha_p, dec_p, f"DEC: {dec_p - dec_k:.2f}", color='purple', fontsize=8, ha='left', va='bottom')
 
-    plt.scatter(ha_corrected, dec_corrected, color='green', label='Pozorované (po korekcii)', alpha=0.6)
+    plt.scatter(ha_corrected, dec_corrected, color='green', label='Observed (after correction)', alpha=0.6)
     for ha_k, dec_k, ha_c, dec_c in zip(ha_catalogue, dec_catalogue, ha_corrected, dec_corrected):
         
         plt.plot([ha_k, ha_c], [dec_k, dec_k], color='orange', linestyle='--', linewidth=1, alpha=0.6)
@@ -221,12 +220,18 @@ def plot_cartesian_comparison_with_error_components(catalogue, observed, observe
         plt.text(ha_c, dec_k, f"HA: {ha_c - ha_k:.2f}", color='orange', fontsize=8, ha='left', va='bottom')
         plt.text(ha_c, dec_c, f"DEC: {dec_c - dec_k:.2f}", color='purple', fontsize=8, ha='left', va='bottom')
 
-    plt.title("Porovnanie pozorovaní pred a po korekcii s chybami v HA a DEC")
-    plt.xlabel("Hodinový uhol (HA) [°]")
-    plt.ylabel("Deklinácia (DEC) [°]")
+    plt.title(f"Comparison of observations prior and after corrections (HA and DEC), n_stars={n_stars}")
+    plt.xlabel("Hour Angle (HA) [°]")
+    plt.ylabel("Declination (DEC) [°]")
     plt.legend(loc='upper right')
     plt.grid(True)
 
+    # Save the figure with minimal whitespace
+    plt.savefig('./output/cartesian_comparison.pdf', 
+                format='pdf', 
+                bbox_inches='tight', 
+                pad_inches=0.05)
+    
     plt.show()
 
 def compute_residuals(catalogue, observed, observed_corrected):
@@ -309,7 +314,7 @@ def correct_target_coordinates(params, catalog_coords, latitude_deg):
 
     export_coords_observation(
         combined,
-        "corrected_target_coordinates.txt",
+        "corrected_target_coordinates(we need to aim here).txt",
         ["HA_cat", "DEC_cat", "HA_corr", "DEC_corr"]
     )
 
@@ -351,8 +356,9 @@ def plot_scatter(ax, data, title):
     circle2 = plt.Circle((0, 0), 0.25, color='g', fill=False, label='0.25°')
     circle3 = plt.Circle((0, 0), 0.05, color='b', fill=False, label='0.05°')
     circle4 = plt.Circle((0, 0), 0.025, color='m', fill=False, label='0.025°')
+    circle5 = plt.Circle((0, 0), 0.005, color='y', fill=False, label='0.005°')
 
-    for circle in [circle1, circle2, circle3, circle4]:
+    for circle in [circle1, circle2, circle3, circle4, circle5]:
         ax.add_patch(circle)
 
     x_lim = 0.65
@@ -404,10 +410,6 @@ def plot_residuals_comparison(res_before, res_after):
     plt.tight_layout()
     plt.show()
 
-
-
-
-
 def calculate_rms_residuals(res_before, res_after):
     """
     Vypočíta RMS rezíduí pre HA a DEC pred a po korekcii v stupňoch a arcsekundách.
@@ -458,18 +460,6 @@ def print_rms_results(rms_results):
     print(f"{'HA (hodinový uhol)':<20}{rms_ha_before_deg:.6f}° ({rms_ha_before_arcsec:.2f}″){'':<10}{rms_ha_after_deg:.6f}° ({rms_ha_after_arcsec:.2f}″)")
     print(f"{'DEC (deklinácia)':<20}{rms_dec_before_deg:.6f}° ({rms_dec_before_arcsec:.2f}″){'':<10}{rms_dec_after_deg:.6f}° ({rms_dec_after_arcsec:.2f}″)")
     print("="*80 + "\n")
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 def main():
@@ -542,10 +532,6 @@ def main():
 
 
 
-
-
-
-
     output_path = "./output"
 
     fig, ax = plt.subplots(figsize=(8, 8))
@@ -557,9 +543,10 @@ def main():
     plt.savefig(f'{output_path}/sim_residuals_after.pdf', format='pdf', bbox_inches='tight', pad_inches=0)
     plt.close()
 
-
     plot_residuals_comparison(res_before, res_after)
-    #plot_cartesian_comparison_with_error_components(katalog, pozorovane, pozorovane_corrected)
+    plot_cartesian_comparison_with_error_components(katalog, pozorovane, pozorovane_corrected, n_stars)
+
+
     # Výpis výsledkov
     
     ZH_c, ZD_c, CO_c, NP_c, MA_c, ME_c, TF_c, DF_c, FO_c = optimal_params
